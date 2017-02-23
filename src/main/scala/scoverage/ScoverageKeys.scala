@@ -18,4 +18,7 @@ object ScoverageKeys {
   lazy val coverageCleanSubprojectFiles = settingKey[Boolean]("removes subproject data after an aggregation")
   lazy val coverageOutputTeamCity = settingKey[Boolean]("turn on teamcity reporting")
   lazy val coverageScalacPluginVersion = settingKey[String]("version of scalac-scoverage-plugin to use")
+  lazy val coverageValidate = taskKey[Unit]("run validation")
+  lazy val coveragePreviousFile = settingKey[String]("path to file to keep previous coverage values")
+
 }

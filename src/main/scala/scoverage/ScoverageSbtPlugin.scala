@@ -1,9 +1,13 @@
 package scoverage
 
+import java.io.{BufferedWriter, FileWriter}
+
 import sbt.Keys._
 import sbt._
 import sbt.plugins.JvmPlugin
-import scoverage.report.{CoverageAggregator, CoberturaXmlWriter, ScoverageHtmlWriter, ScoverageXmlWriter}
+import scoverage.report.{CoberturaXmlWriter, CoverageAggregator, ScoverageHtmlWriter, ScoverageXmlWriter}
+
+import scala.util.Try
 
 object ScoverageSbtPlugin extends AutoPlugin {
 
@@ -21,6 +25,7 @@ object ScoverageSbtPlugin extends AutoPlugin {
     inConfigurations(Compile)) // must be outside of the 'coverageAggregate' task (see: https://github.com/sbt/sbt/issues/1095 or https://github.com/sbt/sbt/issues/780)
 
   override def requires: JvmPlugin.type = plugins.JvmPlugin
+
   override def trigger: PluginTrigger = allRequirements
 
   override def globalSettings: Seq[Def.Setting[_]] = super.globalSettings ++ Seq(
@@ -36,7 +41,8 @@ object ScoverageSbtPlugin extends AutoPlugin {
     coverageOutputDebug := false,
     coverageCleanSubprojectFiles := true,
     coverageOutputTeamCity := false,
-    coverageScalacPluginVersion := DefaultScoverageVersion
+    coverageScalacPluginVersion := DefaultScoverageVersion,
+    coveragePreviousFile := "./previousCoverage"
   )
 
   override def buildSettings: Seq[Setting[_]] = super.buildSettings ++
@@ -48,11 +54,12 @@ object ScoverageSbtPlugin extends AutoPlugin {
     ivyConfigurations += ScoveragePluginConfig,
     coverageReport := coverageReport0.value,
     coverageAggregate := coverageAggregate0.value,
+    coverageValidate := coverageValidate0.value,
     aggregate in coverageAggregate := false
   ) ++ coverageSettings ++ scalacSettings
 
   private lazy val coverageSettings = Seq(
-    libraryDependencies  ++= {
+    libraryDependencies ++= {
       if (coverageEnabled.value)
         Seq(
           // We only add for "compile"" because of macros. This setting could be optimed to just "test" if the handling
@@ -70,7 +77,7 @@ object ScoverageSbtPlugin extends AutoPlugin {
     scalacOptions in(Compile, compile) ++= {
       if (coverageEnabled.value) {
         val scoverageDeps: Seq[File] = update.value matching configurationFilter(ScoveragePluginConfig.name)
-        val pluginPath: File =  scoverageDeps.find(_.getAbsolutePath.contains(ScalacPluginArtifact)) match {
+        val pluginPath: File = scoverageDeps.find(_.getAbsolutePath.contains(ScalacPluginArtifact)) match {
           case None => throw new Exception(s"Fatal: $ScalacPluginArtifact not in libraryDependencies")
           case Some(pluginPath) => pluginPath
         }
@@ -94,7 +101,7 @@ object ScoverageSbtPlugin extends AutoPlugin {
 
   // returns "_sjs$sjsVersion" for Scala.js projects or "" otherwise
   private def optionalScalaJsSuffix(deps: Seq[ModuleID]): String = {
-    val sjsClassifier = deps.collectFirst{
+    val sjsClassifier = deps.collectFirst {
       case ModuleID("org.scala-js", "scalajs-library", v, _, _, _, _, _, _, _, _) => v
     }.map(_.take(3)).map(sjsVersion => "_sjs" + sjsVersion)
 
@@ -270,6 +277,40 @@ object ScoverageSbtPlugin extends AutoPlugin {
   private def sourceEncoding(scalacOptions: Seq[String]): Option[String] = {
     val i = scalacOptions.indexOf("-encoding") + 1
     if (i > 0 && i < scalacOptions.length) Some(scalacOptions(i)) else None
+  }
+
+  private def writeFile(filePath: String, double: Double) = {
+    val file = new File(filePath)
+    val bw = new BufferedWriter(new FileWriter(file))
+    bw.write(double.toString)
+    bw.close()
+  }
+
+  private lazy val coverageValidate0 = Def.task {
+    val target: File = crossTarget.value
+    val log = streams.value.log
+
+    val previous = Try(scala.io.Source.fromFile(coveragePreviousFile.value).mkString.toDouble).getOrElse(0.0)
+
+    log.info(s"Previous coverage value: $previous%")
+
+    loadCoverage(target, log) match {
+      case Some(cov) =>
+        val stmCoverage = cov.statementCoveragePercent
+        log.info(s"Actual coverage value: $stmCoverage%")
+
+        val newCoverage = if (stmCoverage < previous) throw new RuntimeException(s"Actual coverage ($stmCoverage%) is less than previous analysis ($previous%).")
+        else stmCoverage
+
+        writeFile(coveragePreviousFile.value, stmCoverage)
+
+        log.info(s"New coverage: $newCoverage%")
+
+      case None => log.warn("No coverage data, skipping reports")
+    }
+
+    log.info(s"Incremental coverage validation finished.")
+
   }
 
 }
